@@ -1,0 +1,129 @@
+---
+title: "Titanic"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+author: S. Eanes
+---
+
+```{r data, include = F}
+library(tidyverse)
+library(randomForest)
+library(factoextra)
+
+#install.packages("factoextra")
+train <- read_csv("~/Kaggle/data/Titanic/train.csv")
+#test <- read_csv("~/Kaggle/data/Titanic/test.csv")
+```
+
+```{r}
+train.df <- train %>% select("Pclass","Sex","Age","SibSp","Parch","Fare","Embarked","Survived")
+train.df <- train.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked),
+                                Survived = factor(Survived))
+
+train.df <- train.df[complete.cases(train.df),]
+
+fold <- sample(1:8,nrow(train.df),rep=T)
+test <- train.df[fold==1,]
+train.df <- train.df[fold!=1,]
+
+
+nrow(train.df)
+head(train.df)
+```
+
+## Forests
+```{r}
+n <- 200
+npred <- ncol(train.df)-1
+
+mod.bag <- randomForest(Survived ~ .,
+                        data=train.df,
+                        ntree=n,
+                        mtry=npred)
+conf <- mod.bag$confusion
+(conf[1,1]+conf[2,2])/nrow(train.df)
+```
+
+```{r}
+cv_rf <- function(npred=3,ntree=200,nfold=5){
+  err.rate <- numeric(nfold)
+  for(i in 1:nfold){
+  fold <- sample(1:nfold,nrow(train.df),rep=T)
+  train.dat <- train.df[fold!=i,]
+  test.dat <- train.df[fold==i,]
+
+  mod.bag <- randomForest(Survived ~ .,
+                          data=train.dat,
+                          ntree=n,
+                          mtry=npred)
+  
+  preds <- predict(mod.bag,test.dat)
+  err.rate[i] <- sum(preds != test.dat$Survived)/nrow(test.dat)
+  }
+  return(mean(err.rate))
+}
+
+n_cv_rf <- function(n=10,npred=3,ntree=200,nfold=5){
+  mean(sapply(1:n,function(x) cv_rf(npred,ntree,nfold)))
+}
+```
+
+```{r}
+err.rate <- sapply(1:(ncol(train.df)-1),function(x) { n_cv_rf(n=5,npred=x)} )
+err.rate
+
+tibble(npred=1:7,err.rate=err.rate) %>%
+  ggplot(aes(npred,err.rate))+
+  geom_point()+
+  geom_line()
+```
+
+```{r}
+err.rate <- sapply(seq(50,500,50),function(x) { n_cv_rf(n=5,ntree=x)} )
+err.rate
+
+tibble(ntree=seq(50,500,50),err.rate=err.rate) %>%
+  ggplot(aes(ntree,err.rate))+
+  geom_point()+
+  geom_line()
+```
+
+```{r}
+n <- 450
+npred <- 1
+
+mod.bag <- randomForest(Survived ~ .,
+                        data=train.df,
+                        ntree=n,
+                        mtry=1)
+
+test$pred <- predict(mod.bag,test)
+with(test,mean(pred!=Survived))
+```
+
+```{r}
+test <- read_csv("~/Kaggle/data/Titanic/test.csv")
+test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
+test.df <- test.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked))
+
+
+test.df$pred <- predict(mod.bag,test.df)
+head(test.df$pred) 
+submit.df <- test.df %>% mutate(Survived = pred) %>% select("PassengerId", "Survived")
+head(submit.df)
+
+submit.df[is.na(submit.df$Survived),]$Survived <- 0
+write_csv(submit.df, "~/Kaggle/Titanic/submit/rf1.csv")
+
+nrow(submit.df)
+```
+
+## SVM
+
+```{r}
+install.packages("e1071")
+library(e1071)
+```
