@@ -13,21 +13,89 @@ library(factoextra)
 
 #install.packages("factoextra")
 train <- read_csv("~/Kaggle/data/Titanic/train.csv")
-#test <- read_csv("~/Kaggle/data/Titanic/test.csv")
+true.test <- read_csv("~/Kaggle/data/Titanic/test.csv")
 ```
 
 ```{r}
-train.df <- train %>% select("Pclass","Sex","Age","SibSp","Parch","Fare","Embarked","Survived")
+train.df <- train %>% select("Pclass","Sex","Age","SibSp","Parch","Ticket","Fare","Embarked","Survived")
+
 train.df <- train.df %>% mutate(Sex = factor(Sex), 
                                 Embarked = factor(Embarked),
                                 Survived = factor(Survived))
 
+nrow(train.df)
+apply(train.df,2,function(x) sum(is.na(x)))
+apply(true.test,2,function(x) sum(is.na(x)))
+
+train.df <- train.df %>% select(-"Ticket")
+colnames(train.df)
+
+fare.by.class <- train.df %>% group_by(Pclass) %>%
+  summarise(min=min(Fare),mean=mean(Fare),median=median(Fare),max=max(Fare),no.age=sum(is.na(Age)),mean.age=mean(Age,na.rm=T))
+fare.by.class
+```
+
+## Impute Age
+```{r}
+age.unknown <- train.df[is.na(train.df$Age),]
+age.known <- train.df[!is.na(train.df$Age),]
+assertthat::are_equal(nrow(age.unknown)+nrow(age.known),nrow(train.df))
+
+age.samp <- sample(1:5,nrow(age.known),rep=T)
+agek.train <- age.known[age.samp!=1,]
+agek.test <- age.known[age.samp==1,]
+nrow(agek.train)
+nrow(agek.test)
+
+train.df %>% group_by(Pclass) %>%
+  summarise(no.age=sum(is.na(Age)),mean.age=mean(Age,na.rm=T))
+train.df %>% group_by(Sex) %>%
+  summarise(no.age=sum(is.na(Age)),mean.age=mean(Age,na.rm=T))
+train.df %>% group_by(Embarked) %>%
+  summarise(no.age=sum(is.na(Age)),mean.age=mean(Age,na.rm=T))
+
+lm.age <- lm(Age ~ Pclass + Sex + SibSp, data=agek.train)
+summary(lm.age)
+
+agek.test$lm.pred <- predict(lm.age,newdata=agek.test)
+(lm.mse <- sqrt(mean(with(agek.test,(lm.pred-Age)^2))))
+
+
+(class.sex.age <- train.df %>% group_by(Sex,Pclass) %>%
+  summarise(no.age=sum(is.na(Age)),mean.age=mean(Age,na.rm=T)))
+
+colnames(agek.train)
+mod.rf.age <- randomForest::randomForest(Age ~ Pclass + Sex + SibSp + Parch + Fare,
+                       data=agek.train,
+                       ntree=400,
+                       mtry=1)
+agek.test$rf.pred <- predict(mod.rf,newdata=agek.test)
+(rf.mse <- sqrt(mean(with(agek.test,(rf.pred-Age)^2))))
+
+
+mod.svm <- svm(Age ~ Pclass + Sex + SibSp + Parch + Fare,
+               data=agek.train,
+               kernel="poly",
+               cost=1,
+               degree=3)
+agek.test$svm.pred <- predict(mod.svm,newdata=agek.test)
+(svm.mse <- sqrt(mean(with(agek.test,(svm.pred-Age)^2))))
+
+c(lm.mse,rf.mse,svm.mse)
+
+#rf seems to perform marginally the best
+age.unknown$Age <- predict(mod.rf, newdata=age.unknown)
+head(age.unknown)
+train.df <- rbind(age.known,age.unknown)
+```
+
+## Organize Data
+```{r}
 train.df <- train.df[complete.cases(train.df),]
 
 fold <- sample(1:8,nrow(train.df),rep=T)
 test <- train.df[fold==1,]
 train.df <- train.df[fold!=1,]
-
 
 nrow(train.df)
 head(train.df)
@@ -92,31 +160,49 @@ tibble(ntree=seq(50,500,50),err.rate=err.rate) %>%
 
 ```{r}
 n <- 450
-npred <- 1
+npred <- 2
 
 mod.bag <- randomForest(Survived ~ .,
                         data=train.df,
                         ntree=n,
-                        mtry=1)
+                        mtry=npred)
 
 test$pred <- predict(mod.bag,test)
-with(test,mean(pred!=Survived))
+(rf.errate <- with(test,mean(pred!=Survived)))
 ```
 
 ```{r}
-test <- read_csv("~/Kaggle/data/Titanic/test.csv")
+test <- true.test
+
 test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
 test.df <- test.df %>% mutate(Sex = factor(Sex), 
                                 Embarked = factor(Embarked))
+head(test.df,15)
+test.df[is.na(test.df$Fare),]
+train.df %>% filter(Pclass==3) %>% group_by(Sex,Embarked) %>%
+  summarise(median=median(Fare),mean=mean(Fare),n=n())
+#median from all S embarked males of class 3
+test.df[is.na(test.df$Fare),]$Fare <- 8.05
 
+test.df$pred.age <- round(predict(mod.rf.age,newdata=test.df),1)
+test.df[is.na(test.df$Age),]$Age <- test.df[is.na(test.df$Age),]$pred.age
+apply(test.df,2,function(x) sum(is.na(x)))
+#new, imputed data complete, no NAs
+write_csv(test.df,"~/Kaggle/data/Titanic/test_imputed.csv")
+```
+
+```{r}
+test <- read_csv("~/Kaggle/data/Titanic/test_imputed.csv")
+test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
+test.df <- test.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked))
 
 test.df$pred <- predict(mod.bag,test.df)
 head(test.df$pred) 
 submit.df <- test.df %>% mutate(Survived = pred) %>% select("PassengerId", "Survived")
 head(submit.df)
 
-submit.df[is.na(submit.df$Survived),]$Survived <- 0
-write_csv(submit.df, "~/Kaggle/Titanic/submit/rf1.csv")
+write_csv(submit.df, "~/Kaggle/Titanic/submit/rf2.csv")
 
 nrow(submit.df)
 ```
@@ -124,6 +210,149 @@ nrow(submit.df)
 ## SVM
 
 ```{r}
-install.packages("e1071")
 library(e1071)
+```
+
+```{r}
+test.svm <- svm(Survived ~ .,
+                data=train.df,
+                kernel="poly",
+                degree=3,
+                cost=10,
+                )
+test$pred.svm <- predict(test.svm,test)
+(svm.errate <- with(test,mean(pred.svm!=Survived)))
+```
+
+```{r}
+cost.vals <- 10^seq(1,3,by=.33)
+deg.vals <- 1:4
+tune.svm.poly <- tune(svm, Survived~.,
+                      data=train.df,
+                      kernel="poly",
+                      ranges=list(cost=cost.vals,
+                                  degree=deg.vals),
+                      tunecontrol=tune.control(cross=5,nrepeat = 3))
+tune.svm.poly$best.parameters
+tune.svm.poly$best.performance
+```
+
+```{r}
+svm.poly <- svm(Survived~.,
+               data=train.df,
+               kernel="poly",
+               cost=tune.svm.poly$best.parameters$cost,
+               degree=tune.svm.poly$best.parameters$degree)
+```
+
+```{r}
+test <- read_csv("~/Kaggle/data/Titanic/test_imputed.csv")
+test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
+test.df <- test.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked))
+
+test.df$pred <- predict(svm.poly,test.df)
+head(test.df$pred) 
+submit.df <- test.df %>% mutate(Survived = pred) %>% select("PassengerId", "Survived")
+head(submit.df)
+
+write_csv(submit.df, "~/Kaggle/Titanic/submit/svmpoly.csv")
+
+nrow(submit.df)
+```
+
+```{r}
+cost.vals <- 10^seq(0,3,by=.5)
+gamma.vals <- 2^seq(-5,-1)
+tune.svm.rad <- tune(svm, Survived~.,
+                      data=train.df,
+                      kernel="radial",
+                      ranges=list(cost=cost.vals,
+                                  gamma=gamma.vals),
+                      tunecontrol=tune.control(cross=5,nrepeat = 3),
+                     scale=T)
+
+tune.svm.rad$best.parameters
+tune.svm.rad$best.performance
+```
+
+```{r}
+svm.rad <- svm(Survived~.,
+               data=train.df,
+               kernel="radial",
+               cost=tune.svm.rad$best.parameters$cost,
+               gamma=tune.svm.rad$best.parameters$gamma,
+               scale=T)
+```
+
+```{r}
+test <- read_csv("~/Kaggle/data/Titanic/test_imputed.csv")
+test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
+test.df <- test.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked))
+
+test.df$pred <- predict(svm.rad,newdata=test.df)
+head(test.df$pred) 
+submit.df <- test.df %>% mutate(Survived = pred) %>% select("PassengerId", "Survived")
+head(submit.df)
+
+write_csv(submit.df, "~/Kaggle/Titanic/submit/svmrad.csv")
+
+nrow(submit.df)
+```
+
+## KNN
+
+```{r}
+library(class)
+nmax <- 31
+kvals <- seq(1,nmax,by=2)
+nfold <- 5
+err.rate <- numeric(length(kvals))
+for(i in kvals){
+  #print(i)
+  fold <- sample(1:nfold,nrow(train.df),rep=T)
+  err <- numeric(nfold)
+  for(n in 1:nfold){
+    #print(n)
+    train.x <- train.df[fold!=n,] %>% select(-"Survived") %>% data.matrix()
+    train.y <- train.df[fold!=n,] %>% select("Survived") %>% data.matrix()
+    test.x <- train.df[fold==n,] %>% select(-"Survived") %>% data.matrix()
+    test.y <- train.df[fold==n,] %>% select("Survived") %>% data.matrix()
+    
+    pred <- knn(train.x,test.x,train.y,k=i)
+    print(mean(pred!=test.y))
+    err[n] <- mean(pred!=test.y)
+  }
+  print(mean(err))
+  print("\n")
+  err.rate[i/2+1] <- mean(err)
+}
+
+tibble(kval=kvals,err.rate=err.rate) %>%
+  ggplot(aes(kval,err.rate))+
+  geom_point()+
+  geom_line()
+
+(bestk <- kvals[which.min(err.rate)])
+```
+
+```{r}
+test <- read_csv("~/Kaggle/data/Titanic/test_imputed.csv")
+test.df <- test %>% select("PassengerId","Pclass","Sex","Age","SibSp","Parch","Fare","Embarked")
+test.df <- test.df %>% mutate(Sex = factor(Sex), 
+                                Embarked = factor(Embarked))
+
+train.x <- train.df %>% select(-"Survived") %>% data.matrix()
+train.x <- train.df %>% select("Survived") %>% data.matrix()
+test.x <- test.df %>% data.matrix()
+
+pred <- knn(train.x,test.x,train.y,k=bestk)
+test.df$Survived <- pred
+submit.df <- test.df %>% select("PassengerId", "Survived")
+head(submit.df)
+
+write_csv(submit.df, "~/Kaggle/Titanic/submit/svmrad.csv")
+
+nrow(submit.df)
 ```
