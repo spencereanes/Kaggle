@@ -1,0 +1,122 @@
+---
+title: "Titanic"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+author: S. Eanes
+---
+
+```{r data, include = F}
+library(tidyverse)
+library(randomForest)
+library(factoextra)
+library(e1071)
+library(caret)
+library(xgboost)
+```
+```{r}
+#install.packages("factoextra")
+train <- read_csv("~/Kaggle/Titanic/data/train_modified.csv")
+true.test <- read_csv("~/Kaggle/Titanic/data/test_modified.csv")
+base_path <- "~/Kaggle/Titanic/"
+```
+
+```{r}
+results <- function(model,file,folder=base_path){
+  preds <- predict(model,true.test)
+  submit.df <- data.frame(PassengerId = true.test$PassengerId, Survived = preds)
+  #print(colnames(submit.df))
+  write_csv(submit.df,paste(folder,file,sep=""))
+}
+```
+
+```{r}
+train %>% group_by(Embarked) %>% summarise(n=n())
+train[is.na(train$Embarked),]$Embarked <- "S"
+```
+
+```{r}
+train.df <- train %>% mutate(Sex = factor(Sex),
+                             Embarked = factor(Embarked),
+                             Title=factor(Title))
+
+true.test <- true.test %>% mutate(Sex = factor(Sex),
+                             Embarked = factor(Embarked),
+                             Title=factor(Title))
+```
+
+
+```{r}
+set.seed(114)
+trainIndex <- createDataPartition(train.df$Survived,times=1,list=F)
+train.df <- train.df[trainIndex,]
+test.df <- train.df[-trainIndex,]
+```
+
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated 5 times
+                           repeats = 5)
+```
+
+```{r}
+svmGrid <-  expand.grid(sigma = 2^seq(-5,-1),
+                        C=10^seq(-1,2,.5))
+
+set.seed(114)
+svm.fit <- train(factor(Survived) ~ .,
+                 data=train.df,
+                 trControl=fitControl,
+                 method="svmRadial",
+                 preProcess=c("center","scale"),
+                 allowParallel = T,
+                 tuneGrid = svmGrid)
+svm.fit
+trellis.par.set(caretTheme())
+ggplot(svm.fit)  
+```
+
+```{r}
+preds <- predict(svm.fit,test.df)
+mean(preds!=test.df$Survived)
+```
+
+```{r}
+results(svm.fit,"submit/svm_new.csv")
+```
+
+```{r}
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated 5 times
+                           repeats = 5)
+
+gbmControl <- expand.grid(interaction.depth=1:5,n.trees=seq(50,400,50),shrinkage=c(.01,.02,.05),n.minobsinnode=10)
+
+set.seed(114)
+gbm.fit <- train(factor(Survived)~.,
+                 data=train.df,
+                 trControl=fitControl,
+                 method="gbm",
+                 verbose=F,
+                 tuneGrid=gbmControl)
+
+gbm.fit
+```
+
+```{r}
+results(gbm.fit,"submit/gbm_new.csv")
+```
+
+```{r}
+ada.fit <- train(factor(Survived)~.,
+                 data=train.df,
+                 trControl=fitControl,
+                 method="adaboost",
+                 verbose=F)
+
+ada.fit
+```
